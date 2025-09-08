@@ -13,6 +13,8 @@ from tau_bench.types import (
 )
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
+from tau_bench.model_utils.judge_config import JudgeConfig, DEFAULT_JUDGE_CONFIG
+from tau_bench.model_utils.judge_inference import JudgeInference
 
 @dataclass
 class CandidateInfo:
@@ -45,240 +47,116 @@ class ChatReActAgent(Agent):
         provider: str,
         use_reasoning: bool = True,
         temperature: float = 0.0,
+        judge_config: JudgeConfig = None,
     ) -> None:
         print("ASS MODEL: ", model)
         instruction = REACT_INSTRUCTION if use_reasoning else ACT_INSTRUCTION
-        # print(tools_info[0].keys())
-
-        tools_info = [tool for tool in tools_info if "think" not in tool["function"]["name"]]
-
-        self.prompt = (
-            wiki + "\n#Available tools\n" + json.dumps(tools_info) + instruction
-        )
-        # self.model = model
-        self.model = f"Qwen/{model}"
-        self.provider = provider
-        self.temperature = temperature
+        super().__init__(tools_info, wiki, instruction, model, provider, temperature)
         self.use_reasoning = use_reasoning
-        self.tools_info = tools_info
-
-    def generate_next_step(
-        self, messages: List[Dict[str, Any]]
-    ) -> Tuple[Dict[str, Any], Action, float]:
-        # res = completion(
-        #     model=self.model,
-        #     custom_llm_provider=self.provider,
-        #     messages=messages,
-        #     temperature=self.temperature,
-        # )
-
-        force_time = 1
-        message, candidates_info = self.sample_best_of_N_Actions(messages, force_time)
-        #input()
-
-        # message = res.choices[0].message
-        # print(message.content)
-        action_str = message.content.split("Action:")[-1].strip()
-        try:
-            action_parsed = json.loads(action_str)
-        except json.JSONDecodeError:
-            # this is a hack
-            action_parsed = {
-                "name": RESPOND_ACTION_NAME,
-                "arguments": {RESPOND_ACTION_FIELD_NAME: action_str},
-            }
-        assert "name" in action_parsed
-        assert "arguments" in action_parsed
-        action = Action(name=action_parsed["name"], kwargs=action_parsed["arguments"])
+        self.client = OpenAI(
+            base_url="http://localhost:8005/v1",
+            api_key="EMPTY"
+        )
         
-        # print(action)
-        # print(message.model_dump())
-        # input("Next?")
-
-        # Add candidate information to the message
-        message_dict = message.model_dump()
-        message_dict['candidates'] = [candidate.__dict__ for candidate in candidates_info]
-        return message_dict, action, 0
-    
-    ## TODO: Update this to use Best of N (N = 3)
-    ## store log probs for all and choose best answer. 
-    ## 
-    def sample_best_of_N_Actions(self, messages, force_time) -> Tuple[Dict[str, Any], List[CandidateInfo]]:
-        """
-        Minimal change: this function now does Best-of-N sampling and returns the chosen message
-        along with detailed information about all candidates including their log probabilities and ranks.
-        It scores candidates by mean logprob over the JSON that follows the final 'Action:' tag.
-        """
-        # ---- local helpers (kept inside to avoid changing class surface) ----
-        def _join_tokens_and_spans(tokens):
-            out, spans, pos = [], [], 0
-            for t in tokens:
-                s = t.token
-                out.append(s)
-                start, end = pos, pos + len(s)
-                spans.append((start, end))
-                pos = end
-            return "".join(out), spans
-
-        def _find_action_json_span(text: str) -> Optional[Tuple[int, int]]:
-            anchor = text.rfind("Action:")
-            if anchor == -1:
-                return None
-            i = text.find("{", anchor)
-            if i == -1:
-                return None
-            depth = 0
-            for j in range(i, len(text)):
-                ch = text[j]
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return (i, j + 1)
-            return None
-
-        def _mean_logprob_on_span(choice) -> float:
-            """
-            Scores by mean logprob over the Action JSON.
-            If Action.name == RESPOND_ACTION_NAME, instead score only the
-            arguments[RESPOND_ACTION_FIELD_NAME] content string.
-            """
-            toks = choice.logprobs.content or []
-            full_text, spans = _join_tokens_and_spans(toks)
-
-            # 1) Find Action JSON span
-            span = _find_action_json_span(full_text)
-            if span is None:
-                return float("-inf")
-            start_char, end_char = span
-
-            # tokens fully inside the Action JSON
-            idxs = [i for i, (s, e) in enumerate(spans) if s >= start_char and e <= end_char]
-            if not idxs:
-                return float("-inf")
-
-            # default: mean over entire Action JSON
-            default_vals = [toks[i].logprob for i in idxs]
-            default_mean = float(sum(default_vals)) / len(default_vals)
-
-            # 2) If RESPOND action, try to score only the content string
-            action_text = full_text[start_char:end_char]
-            try:
-                payload = json.loads(action_text)
-            except Exception:
-                return default_mean  # fall back if malformed
-
-            if isinstance(payload, dict) and payload.get("name") == RESPOND_ACTION_NAME:
-                args = payload.get("arguments", {})
-                if isinstance(args, dict) and RESPOND_ACTION_FIELD_NAME in args:
-                    content_value = args[RESPOND_ACTION_FIELD_NAME]
-                    if isinstance(content_value, str):
-                        # Try a few needle encodings to locate the emitted content in the JSON text
-                        needles = [
-                            json.dumps(content_value, ensure_ascii=False),  # canonical with quotes/escapes
-                            json.dumps(content_value),                     # ASCII-escaped variant
-                            f"\"{content_value}\"",                         # raw quoted
-                            content_value,                                  # raw (last resort)
-                        ]
-                        for needle in needles:
-                            rel = action_text.find(needle)
-                            if rel != -1:
-                                c_start = start_char + rel
-                                c_end = c_start + len(needle)
-                                c_idxs = [i for i, (s, e) in enumerate(spans) if s >= c_start and e <= c_end]
-                                if c_idxs:
-                                    c_vals = [toks[i].logprob for i in c_idxs]
-                                    return float(sum(c_vals)) / len(c_vals)
-
-            # If we couldn't isolate the content span, use the full-JSON mean
-            return default_mean
-
-        # ---- Best-of-N sampling (single hop; no iterative rethink) ----
-        BEST_OF = 5  # adjust if needed
-        res = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.6,            # keep your current setup
-            n=BEST_OF,
-            logprobs=True,              # correct key (vs log_probs)
-            top_logprobs=0,             # set >0 if you want alternative tokens returned too
-            extra_body=extera_body_qwen3
+        # Initialize judge inference
+        self.judge_config = judge_config or DEFAULT_JUDGE_CONFIG
+        self.judge_inference = JudgeInference(
+            base_url=self.judge_config.base_url,
+            api_key=self.judge_config.api_key,
+            model=self.judge_config.model,
+            temperature=self.judge_config.temperature,
+            max_tokens=self.judge_config.max_tokens
         )
 
-        # score each candidate by mean logprob over Action JSON
-        scores = [(_mean_logprob_on_span(ch), idx) for idx, ch in enumerate(res.choices)]
-        scores.sort(key=lambda x: x[0], reverse=True)
-
-        # Create simplified candidate information
-        candidates_info = []
-        for rank, (score, idx) in enumerate(scores):
-            choice = res.choices[idx]
-            toks = choice.logprobs.content or []
-
-            # Calculate sum logprob (use all tokens for simplicity)
-            sum_logprob = score
-            if toks:
-                logprob_values = [t.logprob for t in toks]
-                sum_logprob = float(sum(logprob_values))
-
-            candidate = CandidateInfo(
-                content=choice.message.content,
-                mean_logprob=score,
-                sum_logprob=sum_logprob,
-                rank=rank + 1,
-                valid=score != float("-inf"),
-                num_tokens=len(toks)
-            )
-            candidates_info.append(candidate)
-
-            # DEBUGGING
-            # print("**********************************")
-            # print(f"Rank {rank + 1}: Log prob {score}, Valid: {score != float('-inf')}")
-            # print(f"Content: {choice.message.content[:100]}...")
-            # print("**********************************")
-
-        best_idx = scores[0][1]
-        return res.choices[best_idx].message, candidates_info
-
-    def solve(
-        self, env: Env, task_index: Optional[int] = None, max_num_steps: int = 30
-    ) -> SolveResult:
-        response = env.reset(task_index=task_index)
-        reward = 0.0
-        messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": self.prompt},
-            {"role": "user", "content": response.observation},
-        ]
+    def solve(self, env: Env) -> SolveResult:
+        trajectory = []
+        max_steps = 50
+        step = 0
         
-        # print(response.observation)
-        total_cost = 0.0
-        info = {}
-        for _ in range(max_num_steps):
-            message, action, cost = self.generate_next_step(messages)
-            response = env.step(action)
-            obs = response.observation
-            # print(messages[1:])
-            # print(obs)
-            # input("wait")
-            reward = response.reward
-            info = {**info, **response.info.model_dump()}
-            if action.name != RESPOND_ACTION_NAME:
-                obs = "API output: " + obs
-            messages.extend(
-                [
-                    message,
-                    {"role": "user", "content": obs},
-                ]
-            )
-            total_cost += cost
-            if response.done:
+        while step < max_steps:
+            step += 1
+            
+            # Get current state
+            state = env.get_state()
+            trajectory.append({"step": step, "state": state})
+            
+            # Generate action using LLM judge
+            action = self._generate_action_with_judge(state, trajectory)
+            trajectory.append({"step": step, "action": action})
+            
+            # Execute action
+            result = env.step(action)
+            trajectory.append({"step": step, "result": result})
+            
+            # Check if done
+            if result.done:
                 break
-        return SolveResult(
-            messages=messages,
-            reward=reward,
-            info=info,
+                
+        return SolveResult(trajectory=trajectory, success=result.done)
+
+    def _get_conversation_history(self, trajectory: List[Dict], num_turns: int = 2) -> str:
+        """Extract the last num_turns of conversation from trajectory"""
+        history = []
+        turn_count = 0
+        
+        # Go backwards through trajectory to find conversation turns
+        for entry in reversed(trajectory):
+            if "action" in entry and entry["action"].name == RESPOND_ACTION_NAME:
+                history.insert(0, f"User: {entry['action'].args.get(RESPOND_ACTION_FIELD_NAME, '')}")
+                turn_count += 1
+                if turn_count >= num_turns:
+                    break
+            elif "result" in entry and "response" in entry["result"]:
+                history.insert(0, f"Agent: {entry['result']['response']}")
+        
+        return "\n".join(history)
+
+    def _generate_action_candidates(self, state: str, conversation_history: str) -> List[Dict]:
+        """Generate multiple action candidates using the current model"""
+        return self.judge_inference.generate_action_candidates(
+            state=state,
+            conversation_history=conversation_history,
+            tools_info=self.tools_info,
+            num_candidates=self.judge_config.num_candidates
         )
+
+    def _llm_judge_action_selection(
+        self, 
+        state: str, 
+        conversation_history: str, 
+        candidates: List[Dict]
+    ) -> Action:
+        """Use LLM judge to select the best action from candidates"""
+        result = self.judge_inference.select_best_action(
+            state=state,
+            conversation_history=conversation_history,
+            candidates=candidates,
+            tools_info=self.tools_info
+        )
+        
+        return Action(
+            name=result["selected_candidate"]["action_name"],
+            args=result["selected_candidate"]["action_args"]
+        )
+
+    def _generate_action_with_judge(self, state: str, trajectory: List[Dict]) -> Action:
+        """Generate action using LLM judge instead of log probability ranking"""
+        # Get conversation history (last 2 turns)
+        conversation_history = self._get_conversation_history(trajectory, self.judge_config.conversation_turns)
+        
+        # Generate multiple action candidates
+        candidates = self._generate_action_candidates(state, conversation_history)
+        
+        # Use LLM judge to select best action
+        best_action = self._llm_judge_action_selection(state, conversation_history, candidates)
+        
+        return best_action
+
+    # Keep the original method for backward compatibility
+    def _generate_action(self, state: str, trajectory: List[Dict]) -> Action:
+        """Original action generation method - now uses judge system"""
+        return self._generate_action_with_judge(state, trajectory)
+
         
 REACT_INSTRUCTION = f"""
 # Instruction
