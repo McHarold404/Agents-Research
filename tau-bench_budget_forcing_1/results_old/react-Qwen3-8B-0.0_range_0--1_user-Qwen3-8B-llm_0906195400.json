@@ -1,0 +1,12 @@
+[
+  {
+    "task_id": 0,
+    "reward": 0.0,
+    "info": {
+      "error": "name 'score' is not defined",
+      "traceback": "Traceback (most recent call last):\n  File \"/home/nahuja11/Agents-Research/tau-bench_budget_forcing_1/tau_bench/run.py\", line 78, in _run\n    res = agent.solve(\n          ^^^^^^^^^^^^\n  File \"/home/nahuja11/Agents-Research/tau-bench_budget_forcing_1/tau_bench/agents/chat_react_agent.py\", line 219, in solve\n    message, action, cost = self.generate_next_step(messages)\n                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/nahuja11/Agents-Research/tau-bench_budget_forcing_1/tau_bench/agents/chat_react_agent.py\", line 65, in generate_next_step\n    message = self.budget_forcing_process(messages, force_time)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/nahuja11/Agents-Research/tau-bench_budget_forcing_1/tau_bench/agents/chat_react_agent.py\", line 200, in budget_forcing_process\n    print(\"Log prob:\", score[i],\"content:\",res.choices[i].message['content'])\n                       ^^^^^\nNameError: name 'score' is not defined. Did you mean: 'scores'?\n"
+    },
+    "traj": [],
+    "trial": 0
+  }
+]
