@@ -15,4 +15,8 @@ export HF_DATASETS_CACHE="/mnt/shared/shared_hf_home"
 
 # python run.py --num-trials 5 --agent-strategy react --env airline --model Qwen/Qwen3-4B-Thinking-2507 --model-provider vllm --user-model gpt-4o --user-model-provider openai --user-strategy llm --max-concurrency 1
 # python run.py --num-trials 5 --agent-strategy react --env retail --model Qwen3-8B --model-provider vllm --user-model Qwen2.5-72B-Instruct  --user-model-provider vllm --user-strategy llm --max-concurrency 4
-python run.py --num-trials 5 --agent-strategy react --env retail --model Qwen3-8B --model-provider vllm --user-model Qwen2.5-72B-Instruct --user-model-provider vllm --user-strategy llm --max-concurrency 4 
+
+### Naman 
+# python run.py --num-trials 5 --agent-strategy react --env retail --model Qwen3-8B --model-provider vllm --user-model Qwen2.5-72B-Instruct --user-model-provider vllm --user-strategy llm --max-concurrency 4 
+
+python run.py --num-trials 5 --agent-strategy react --env retail --model Qwen3-8B --model-provider vllm --user-model Qwen3-8B --user-model-provider vllm --user-strategy llm --max-concurrency 1  --task-ids 0 

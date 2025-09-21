@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any, Union
 
 
 client = OpenAI(
-    base_url="http://localhost:3001/v1",
+    base_url="http://localhost:8005/v1",
     api_key="EMPTY"
 )
 
